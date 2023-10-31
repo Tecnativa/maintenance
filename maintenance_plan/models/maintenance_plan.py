@@ -109,7 +109,14 @@ class MaintenancePlan(models.Model):
         elif step == "week":
             return relativedelta(weeks=interval)
         elif step == "month":
-            return relativedelta(months=interval)
+            last_day_month = self.start_maintenance_date + relativedelta(
+                months=1, day=1, days=-1
+            )
+            # Fix to set the correct date: 2023-10-31, 2023-11-30 and 2023-12-31
+            if last_day_month == self.start_maintenance_date:
+                return relativedelta(day=1, months=interval + 1, days=-1)
+            else:
+                return relativedelta(months=interval)
         elif step == "year":
             return relativedelta(years=interval)
 
@@ -123,7 +130,7 @@ class MaintenancePlan(models.Model):
     def _compute_next_maintenance(self):
         for plan in self.filtered(lambda x: x.interval > 0):
 
-            interval_timedelta = self.get_relativedelta(
+            interval_timedelta = plan.get_relativedelta(
                 plan.interval, plan.interval_step
             )
 

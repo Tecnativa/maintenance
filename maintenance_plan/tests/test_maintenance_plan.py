@@ -1,16 +1,21 @@
 # Copyright 2017 Camptocamp SA
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl).
 
-from datetime import timedelta
-
 from dateutil.relativedelta import relativedelta
+from freezegun import freeze_time
 
 from odoo import _, fields
 
 from .common import TestMaintenancePlanBase
 
 
+@freeze_time("2023-01-31")
 class TestMaintenancePlan(TestMaintenancePlanBase):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.today_date = fields.Date.from_string(fields.Date.today())
+
     def test_name_get(self):
         self.assertEqual(
             self.maintenance_plan_1.name_get()[0][1],
@@ -35,118 +40,83 @@ class TestMaintenancePlan(TestMaintenancePlanBase):
     def test_next_maintenance_date_01(self):
         # We set start maintenance date tomorrow and check next maintenance
         # date has been correctly computed
-        self.maintenance_plan_1.write(
-            {
-                "start_maintenance_date": fields.Date.to_string(
-                    self.today_date - timedelta(days=1)
-                )
-            }
-        )
-        self.maintenance_plan_1._compute_next_maintenance()
+        self.maintenance_plan_1.start_maintenance_date = "2023-01-30"
         # Check next maintenance date is 1 month from start date
         self.assertEqual(
             self.maintenance_plan_1.next_maintenance_date,
-            self.maintenance_plan_1.start_maintenance_date
-            + relativedelta(months=self.maintenance_plan_1.interval),
+            fields.Date.from_string("2023-02-28"),
         )
 
     def test_next_maintenance_date_02(self):
         self.cron.method_direct_trigger()
+        # Check maintenance plan dates
+        self.assertEqual(
+            self.maintenance_plan_1.start_maintenance_date, self.today_date
+        )
+        self.assertEqual(self.maintenance_plan_1.next_maintenance_date, self.today_date)
+        # Check information from generated_requests
         generated_requests = self.maintenance_request_obj.search(
             [("maintenance_plan_id", "=", self.maintenance_plan_1.id)],
             order="schedule_date asc",
         )
         self.assertEqual(len(generated_requests), 3)
-        next_maintenance = generated_requests[0]
-        next_date = next_maintenance.request_date
-        # First maintenance was planned today:
-        self.assertEqual(next_date, self.today_date)
-        self.assertEqual(
-            next_date,
-            self.maintenance_plan_1.start_maintenance_date,
-        )
-        self.assertEqual(
-            next_date,
-            self.maintenance_plan_1.next_maintenance_date,
-        )
+        maintenance_1 = generated_requests[0]
+        # First maintenance was planned 2023-01-31
+        self.assertEqual(maintenance_1.request_date, self.today_date)
         # Complete request:
-        next_maintenance.stage_id = self.done_stage
+        maintenance_1.stage_id = self.done_stage
         # Check next one:
-        next_maintenance = generated_requests[1]
-        next_date = next_maintenance.request_date
-        # This should be expected next month:
+        maintenance_2 = generated_requests[1]
+        # This should be expected 2023-02-28
         self.assertEqual(
-            next_date,
-            self.today_date + relativedelta(months=self.maintenance_plan_1.interval),
-        )
-        self.assertEqual(
-            next_date,
-            self.maintenance_plan_1.next_maintenance_date,
+            maintenance_2.request_date, fields.Date.from_string("2023-02-28")
         )
         # Complete request and Check next one:
-        next_maintenance.stage_id = self.done_stage
-        next_maintenance = generated_requests[2]
-        next_date = next_maintenance.request_date
-        # This one should be expected in 2 months:
+        maintenance_2.stage_id = self.done_stage
+        maintenance_3 = generated_requests[2]
+        # This one should be expected 2023-03-31
         self.assertEqual(
-            next_date,
-            self.today_date
-            + relativedelta(months=2 * self.maintenance_plan_1.interval),
-        )
-        self.assertEqual(
-            next_date,
-            self.maintenance_plan_1.next_maintenance_date,
+            maintenance_3.request_date, fields.Date.from_string("2023-03-31")
         )
         # Move it to a date before `start_maintenance_date` (the request should
         # be ignored)
-        past_date = self.today_date + relativedelta(
-            months=-3 * self.maintenance_plan_1.interval
-        )
-        next_maintenance.request_date = past_date
-        self.assertNotEqual(
-            past_date,
-            self.maintenance_plan_1.next_maintenance_date,
-        )
+        past_date = fields.Date.from_string("2022-12-31")
+        maintenance_3.request_date = past_date
+        self.assertNotEqual(self.maintenance_plan_1.next_maintenance_date, past_date)
         self.assertEqual(
             self.maintenance_plan_1.next_maintenance_date,
-            self.today_date
-            + relativedelta(months=2 * self.maintenance_plan_1.interval),
+            fields.Date.from_string("2023-03-31"),
         )
         # Move the request_date far into the future:
-        future_date = self.today_date + relativedelta(
-            months=5 * self.maintenance_plan_1.interval
-        )
-        next_maintenance.request_date = future_date
-        self.assertEqual(
-            future_date,
-            self.maintenance_plan_1.next_maintenance_date,
-        )
+        future_date = fields.Date.from_string("2023-05-31")
+        maintenance_3.request_date = future_date
+        self.assertEqual(self.maintenance_plan_1.next_maintenance_date, future_date)
         # Complete request in that date, next expected date should be 1 month
         # after latest request done.:
-        next_maintenance.stage_id = self.done_stage
+        maintenance_3.stage_id = self.done_stage
         self.assertEqual(
             self.maintenance_plan_1.next_maintenance_date,
-            self.today_date
-            + relativedelta(months=6 * self.maintenance_plan_1.interval),
+            fields.Date.from_string("2023-06-30"),
         )
 
     def test_generate_requests(self):
         self.cron.method_direct_trigger()
-
         generated_requests = self.maintenance_request_obj.search(
             [("maintenance_plan_id", "=", self.maintenance_plan_1.id)],
             order="schedule_date asc",
         )
         self.assertEqual(len(generated_requests), 3)
-
-        request_date_schedule = self.today_date
-
-        for req in generated_requests:
-            self.assertEqual(
-                fields.Date.to_date(req.schedule_date), request_date_schedule
-            )
-            request_date_schedule = request_date_schedule + relativedelta(months=1)
-
+        self.assertEqual(
+            fields.Date.to_date(generated_requests[0].schedule_date), self.today_date
+        )
+        self.assertEqual(
+            fields.Date.to_date(generated_requests[1].schedule_date),
+            fields.Date.from_string("2023-02-28"),
+        )
+        self.assertEqual(
+            fields.Date.to_date(generated_requests[2].schedule_date),
+            fields.Date.from_string("2023-03-31"),
+        )
         generated_request = self.maintenance_request_obj.search(
             [("maintenance_plan_id", "=", self.maintenance_plan_4.id)], limit=1
         )
@@ -167,42 +137,33 @@ class TestMaintenancePlan(TestMaintenancePlanBase):
         )
 
         self.assertEqual(len(generated_requests), 3)
-
         # We set plan start_maintenanca_date to a future one. New requests should take
         # into account this new date.
-
-        self.maintenance_plan_1.write(
-            {
-                "start_maintenance_date": fields.Date.to_string(
-                    self.today_date + timedelta(weeks=9)
-                ),
-                "maintenance_plan_horizon": 3,
-            }
-        )
-
+        new_date = fields.Date.from_string("2023-04-30")
+        self.maintenance_plan_1.next_maintenance_date = new_date
+        self.maintenance_plan_1.maintenance_plan_horizon = 3
         self.cron.method_direct_trigger()
-
         generated_requests = self.maintenance_request_obj.search(
             [("maintenance_plan_id", "=", self.maintenance_plan_1.id)],
             order="schedule_date asc",
         )
-
         self.assertEqual(len(generated_requests), 4)
-        self.assertEqual(
-            generated_requests[-1].request_date,
-            self.today_date + relativedelta(weeks=9),
-        )
+        self.assertEqual(generated_requests[-1].request_date, new_date)
 
     def test_get_relativedelta(self):
         plan = self.maintenance_plan_1
-        result = plan.get_relativedelta(1, "day")
-        self.assertEqual(relativedelta(days=1), result)
-        result = plan.get_relativedelta(1, "week")
-        self.assertEqual(relativedelta(weeks=1), result)
-        result = plan.get_relativedelta(1, "month")
-        self.assertEqual(relativedelta(months=1), result)
-        result = plan.get_relativedelta(1, "year")
-        self.assertEqual(relativedelta(years=1), result)
+        result_day = plan.get_relativedelta(1, "day")
+        self.assertEqual(relativedelta(days=1), result_day)
+        result_week = plan.get_relativedelta(1, "week")
+        self.assertEqual(relativedelta(weeks=1), result_week)
+        plan.start_maintenance_date = "2023-01-31"
+        result_month_1 = plan.get_relativedelta(1, "month")
+        self.assertEqual(relativedelta(months=2, day=1, days=-1), result_month_1)
+        plan.start_maintenance_date = "2023-01-29"
+        result_month_2 = plan.get_relativedelta(1, "month")
+        self.assertEqual(relativedelta(months=1), result_month_2)
+        result_year = plan.get_relativedelta(1, "year")
+        self.assertEqual(relativedelta(years=1), result_year)
 
     def test_generate_requests_inactive_equipment(self):
         self.equipment_1.active = False
